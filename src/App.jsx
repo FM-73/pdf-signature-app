@@ -11,11 +11,9 @@ export default function App() {
 
   const [pdfBytes, setPdfBytes] = useState(null);
   const [pdfFile, setPdfFile] = useState(null);
-
   const [pdfDocPreview, setPdfDocPreview] = useState(null);
   const [pageNumber, setPageNumber] = useState(1);
   const [pageCount, setPageCount] = useState(1);
-
   const [signedUrl, setSignedUrl] = useState(null);
 
   const [name, setName] = useState("");
@@ -24,57 +22,64 @@ export default function App() {
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
 
   const [drawing, setDrawing] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
   const [sigPos, setSigPos] = useState({
     x: 80,
     y: 120,
     width: 180,
-    height: 80,
+    height: 80
   });
-
-  const [dragging, setDragging] = useState(false);
 
   useEffect(() => {
     const canvas = signCanvasRef.current;
-    const ctx = canvas.getContext("2d");
+    if (!canvas) return;
 
+    const ctx = canvas.getContext("2d");
     ctx.lineWidth = 3;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
   }, []);
+
+  useEffect(() => {
+    if (pdfDocPreview) {
+      renderPage(pdfDocPreview, pageNumber);
+    }
+  }, [pdfDocPreview, pageNumber, sigPos]);
 
   async function loadPdf(e) {
     const file = e.target.files[0];
     if (!file) return;
 
     const bytes = await file.arrayBuffer();
+    const copy = bytes.slice(0);
 
-    setPdfBytes(bytes);
     setPdfFile(file);
+    setPdfBytes(copy);
+    setSignedUrl(null);
 
-    const loadingTask = pdfjsLib.getDocument({ data: bytes });
+    const loadingTask = pdfjsLib.getDocument({ data: copy.slice(0) });
     const pdf = await loadingTask.promise;
 
     setPdfDocPreview(pdf);
     setPageCount(pdf.numPages);
-
-    renderPage(pdf, 1);
+    setPageNumber(1);
   }
 
   async function renderPage(pdf, pageNum) {
     const page = await pdf.getPage(pageNum);
-
     const viewport = page.getViewport({ scale: 1.5 });
 
     const canvas = pdfCanvasRef.current;
-    const ctx = canvas.getContext("2d");
+    if (!canvas) return;
 
+    const ctx = canvas.getContext("2d");
     canvas.width = viewport.width;
     canvas.height = viewport.height;
 
     await page.render({
       canvasContext: ctx,
-      viewport,
+      viewport
     }).promise;
 
     drawSignatureBox();
@@ -82,48 +87,45 @@ export default function App() {
 
   function drawSignatureBox() {
     const canvas = pdfCanvasRef.current;
+    if (!canvas) return;
+
     const ctx = canvas.getContext("2d");
 
+    ctx.save();
     ctx.strokeStyle = "red";
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([8, 5]);
 
-    ctx.strokeRect(
-      sigPos.x,
-      sigPos.y,
-      sigPos.width,
-      sigPos.height
-    );
+    ctx.strokeRect(sigPos.x, sigPos.y, sigPos.width, sigPos.height);
+
+    ctx.fillStyle = "rgba(255, 0, 0, 0.08)";
+    ctx.fillRect(sigPos.x, sigPos.y, sigPos.width, sigPos.height);
+
+    ctx.restore();
   }
 
-  useEffect(() => {
-    if (pdfDocPreview) {
-      renderPage(pdfDocPreview, pageNumber);
-    }
-  }, [sigPos, pageNumber]);
+  function getCanvasPos(e, canvas) {
+    e.preventDefault();
 
-  function getPos(e, canvas) {
     const rect = canvas.getBoundingClientRect();
-
     const touch = e.touches?.[0];
 
     const clientX = touch ? touch.clientX : e.clientX;
     const clientY = touch ? touch.clientY : e.clientY;
 
     return {
-      x: clientX - rect.left,
-      y: clientY - rect.top,
+      x: (clientX - rect.left) * (canvas.width / rect.width),
+      y: (clientY - rect.top) * (canvas.height / rect.height)
     };
   }
 
   function startSign(e) {
     const canvas = signCanvasRef.current;
     const ctx = canvas.getContext("2d");
-
-    const p = getPos(e, canvas);
+    const p = getCanvasPos(e, canvas);
 
     ctx.beginPath();
     ctx.moveTo(p.x, p.y);
-
     setDrawing(true);
   }
 
@@ -132,14 +134,14 @@ export default function App() {
 
     const canvas = signCanvasRef.current;
     const ctx = canvas.getContext("2d");
-
-    const p = getPos(e, canvas);
+    const p = getCanvasPos(e, canvas);
 
     ctx.lineTo(p.x, p.y);
     ctx.stroke();
   }
 
-  function endSign() {
+  function endSign(e) {
+    e?.preventDefault?.();
     setDrawing(false);
   }
 
@@ -152,14 +154,15 @@ export default function App() {
 
   function startDrag(e) {
     const canvas = pdfCanvasRef.current;
-    const p = getPos(e, canvas);
+    const p = getCanvasPos(e, canvas);
 
-    if (
+    const inside =
       p.x >= sigPos.x &&
       p.x <= sigPos.x + sigPos.width &&
       p.y >= sigPos.y &&
-      p.y <= sigPos.y + sigPos.height
-    ) {
+      p.y <= sigPos.y + sigPos.height;
+
+    if (inside) {
       setDragging(true);
     }
   }
@@ -168,24 +171,43 @@ export default function App() {
     if (!dragging) return;
 
     const canvas = pdfCanvasRef.current;
-    const p = getPos(e, canvas);
+    const p = getCanvasPos(e, canvas);
 
-    setSigPos((prev) => ({
-      ...prev,
-      x: p.x - prev.width / 2,
-      y: p.y - prev.height / 2,
+    setSigPos((old) => ({
+      ...old,
+      x: Math.max(0, p.x - old.width / 2),
+      y: Math.max(0, p.y - old.height / 2)
     }));
   }
 
-  function endDrag() {
+  function endDrag(e) {
+    e?.preventDefault?.();
     setDragging(false);
   }
 
+  function enlargeBox() {
+    setSigPos((old) => ({
+      ...old,
+      width: old.width + 20,
+      height: old.height + 10
+    }));
+  }
+
+  function shrinkBox() {
+    setSigPos((old) => ({
+      ...old,
+      width: Math.max(80, old.width - 20),
+      height: Math.max(40, old.height - 10)
+    }));
+  }
+
   async function signPdf() {
-    if (!pdfBytes) return;
+    if (!pdfBytes) {
+      alert("Bitte zuerst ein PDF auswählen.");
+      return;
+    }
 
-    const pdfDoc = await PDFDocument.load(pdfBytes);
-
+    const pdfDoc = await PDFDocument.load(pdfBytes.slice(0));
     const pages = pdfDoc.getPages();
     const page = pages[pageNumber - 1];
 
@@ -193,95 +215,133 @@ export default function App() {
     const pdfHeight = page.getHeight();
 
     const previewCanvas = pdfCanvasRef.current;
-
     const scaleX = pdfWidth / previewCanvas.width;
     const scaleY = pdfHeight / previewCanvas.height;
 
-    const png = await pdfDoc.embedPng(
+    const x = sigPos.x * scaleX;
+    const width = sigPos.width * scaleX;
+    const boxHeight = (sigPos.height + 70) * scaleY;
+    const y = pdfHeight - (sigPos.y * scaleY) - boxHeight;
+
+    const signaturePng = await pdfDoc.embedPng(
       signCanvasRef.current.toDataURL("image/png")
     );
 
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-    const x = sigPos.x * scaleX;
-    const y =
-      pdfHeight -
-      (sigPos.y + sigPos.height) * scaleY;
-
-    const width = sigPos.width * scaleX;
-    const height = sigPos.height * scaleY;
-
     page.drawRectangle({
       x,
       y,
       width,
-      height: height + 60,
-      color: rgb(1, 1, 1),
+      height: boxHeight,
       borderWidth: 1,
+      borderColor: rgb(0.25, 0.25, 0.25),
+      color: rgb(1, 1, 1),
+      opacity: 0.95
     });
 
     page.drawText("Digital signiert", {
       x: x + 8,
-      y: y + height + 42,
+      y: y + boxHeight - 18,
       size: 10,
-      font,
+      font
     });
 
-    page.drawImage(png, {
+    page.drawImage(signaturePng, {
       x: x + 8,
-      y: y + 10,
+      y: y + 55,
       width: width - 16,
-      height: height - 20,
+      height: sigPos.height * scaleY
     });
 
     page.drawText(`Name: ${name}`, {
       x: x + 8,
-      y: y + height + 28,
+      y: y + 38,
       size: 8,
-      font,
+      font
     });
 
     page.drawText(`Ort: ${place}`, {
       x: x + 8,
-      y: y + height + 18,
+      y: y + 27,
       size: 8,
-      font,
+      font
     });
 
     page.drawText(`Zweck: ${purpose}`, {
       x: x + 8,
-      y: y + height + 8,
+      y: y + 16,
       size: 8,
-      font,
+      font
     });
 
     page.drawText(`Datum: ${date}`, {
       x: x + 8,
-      y: y + height - 2,
+      y: y + 5,
       size: 8,
-      font,
+      font
     });
 
     const signed = await pdfDoc.save();
-
-    const blob = new Blob([signed], {
-      type: "application/pdf",
-    });
-
+    const blob = new Blob([signed], { type: "application/pdf" });
     const url = URL.createObjectURL(blob);
 
     setSignedUrl(url);
   }
 
-  function savePdf() {
+  async function savePdf() {
     if (!signedUrl) return;
 
-    const a = document.createElement("a");
+    const response = await fetch(signedUrl);
+    const blob = await response.blob();
 
-    a.href = signedUrl;
-    a.download = "signiert.pdf";
+    const filename =
+      (pdfFile?.name || "dokument.pdf").replace(/\.pdf$/i, "") +
+      "_signiert.pdf";
 
-    a.click();
+    if (window.showSaveFilePicker) {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [
+          {
+            description: "PDF",
+            accept: { "application/pdf": [".pdf"] }
+          }
+        ]
+      });
+
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+    } else {
+      const a = document.createElement("a");
+      a.href = signedUrl;
+      a.download = filename;
+      a.click();
+    }
+  }
+
+  async function sharePdf() {
+    if (!signedUrl) return;
+
+    const response = await fetch(signedUrl);
+    const blob = await response.blob();
+
+    const filename =
+      (pdfFile?.name || "dokument.pdf").replace(/\.pdf$/i, "") +
+      "_signiert.pdf";
+
+    const file = new File([blob], filename, { type: "application/pdf" });
+
+    if (navigator.share && navigator.canShare?.({ files: [file] })) {
+      await navigator.share({
+        title: filename,
+        text: filename,
+        files: [file]
+      });
+    } else {
+      alert("Teilen wird auf diesem Gerät nicht unterstützt.");
+    }
   }
 
   return (
@@ -289,11 +349,7 @@ export default function App() {
       <div className="card">
         <h1>PDF Signature App</h1>
 
-        <input
-          type="file"
-          accept="application/pdf"
-          onChange={loadPdf}
-        />
+        <input type="file" accept="application/pdf" onChange={loadPdf} />
 
         <input
           placeholder="Name"
@@ -320,19 +376,18 @@ export default function App() {
         />
 
         <label>Seite</label>
-
         <select
           value={pageNumber}
           onChange={(e) => setPageNumber(Number(e.target.value))}
         >
-          {Array.from({ length: pageCount }).map((_, i) => (
-            <option key={i + 1} value={i + 1}>
-              Seite {i + 1}
+          {Array.from({ length: pageCount }).map((_, index) => (
+            <option key={index + 1} value={index + 1}>
+              Seite {index + 1}
             </option>
           ))}
         </select>
 
-        <h3>PDF Vorschau</h3>
+        <h3>PDF-Vorschau: roten Rahmen verschieben</h3>
 
         <canvas
           ref={pdfCanvasRef}
@@ -340,14 +395,19 @@ export default function App() {
             width: "100%",
             border: "1px solid #ccc",
             touchAction: "none",
+            background: "white"
           }}
           onMouseDown={startDrag}
           onMouseMove={moveDrag}
           onMouseUp={endDrag}
+          onMouseLeave={endDrag}
           onTouchStart={startDrag}
           onTouchMove={moveDrag}
           onTouchEnd={endDrag}
         />
+
+        <button onClick={shrinkBox}>Signaturfeld kleiner</button>
+        <button onClick={enlargeBox}>Signaturfeld größer</button>
 
         <h3>Unterschrift</h3>
 
@@ -360,6 +420,7 @@ export default function App() {
             height: "200px",
             border: "1px solid #ccc",
             touchAction: "none",
+            background: "white"
           }}
           onMouseDown={startSign}
           onMouseMove={moveSign}
@@ -370,18 +431,14 @@ export default function App() {
           onTouchEnd={endSign}
         />
 
-        <button onClick={clearSignature}>
-          Signatur löschen
-        </button>
-
-        <button onClick={signPdf}>
-          PDF signieren
-        </button>
+        <button onClick={clearSignature}>Signatur löschen</button>
+        <button onClick={signPdf}>PDF signieren</button>
 
         {signedUrl && (
-          <button onClick={savePdf}>
-            PDF speichern
-          </button>
+          <>
+            <button onClick={savePdf}>PDF speichern</button>
+            <button onClick={sharePdf}>PDF senden / teilen</button>
+          </>
         )}
       </div>
     </div>
