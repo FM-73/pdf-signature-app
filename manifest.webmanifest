@@ -1,0 +1,11 @@
+{
+  "name": "PDF Signature App",
+  "short_name": "PDF Sign",
+  "description": "Lokale dokumentenzentrierte PDF-Signatur-App",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f1f5f9",
+  "theme_color": "#0f172a",
+  "orientation": "portrait",
+  "icons": []
+}
