@@ -1,3 +1,5 @@
+import React, { useEffect, useRef, useState } from "react";
+import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfWorker from "pdfjs-dist/build/pdf.worker.mjs?url";
 
