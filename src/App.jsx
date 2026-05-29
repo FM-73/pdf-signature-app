@@ -35,7 +35,6 @@ export default function App() {
   useEffect(() => {
     const canvas = signCanvasRef.current;
     if (!canvas) return;
-
     const ctx = canvas.getContext("2d");
     ctx.lineWidth = 3;
     ctx.lineCap = "round";
@@ -77,7 +76,6 @@ export default function App() {
     canvas.height = viewport.height;
 
     await page.render({ canvasContext: ctx, viewport }).promise;
-
     drawSignatureBox();
   }
 
@@ -86,13 +84,11 @@ export default function App() {
     if (!canvas) return;
 
     const ctx = canvas.getContext("2d");
-
     ctx.save();
     ctx.strokeStyle = "red";
     ctx.lineWidth = 3;
     ctx.setLineDash([8, 5]);
     ctx.strokeRect(sigPos.x, sigPos.y, sigPos.width, sigPos.height);
-
     ctx.fillStyle = "rgba(255,0,0,0.08)";
     ctx.fillRect(sigPos.x, sigPos.y, sigPos.width, sigPos.height);
     ctx.restore();
@@ -155,7 +151,10 @@ export default function App() {
 
   function endSign(e) {
     e?.preventDefault?.();
-    setPoints((old) => [...old, { event: "end", time: new Date().toISOString() }]);
+    setPoints((old) => [
+      ...old,
+      { event: "end", time: new Date().toISOString(), timestamp: performance.now() }
+    ]);
     setDrawing(false);
   }
 
@@ -213,11 +212,45 @@ export default function App() {
     }));
   }
 
-  async function sha256Hex(buffer) {
+  async function sha256Hex(data) {
+    const buffer = data instanceof ArrayBuffer ? data : data.buffer;
     const hash = await crypto.subtle.digest("SHA-256", buffer);
     return Array.from(new Uint8Array(hash))
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
+  }
+
+  function enrichPoints(rawPoints) {
+    return rawPoints.map((point, index) => {
+      const previous = index > 0 ? rawPoints[index - 1] : null;
+
+      if (
+        !previous ||
+        point.event === "start" ||
+        previous.event === "end" ||
+        typeof point.x !== "number" ||
+        typeof previous.x !== "number"
+      ) {
+        return {
+          ...point,
+          deltaMs: 0,
+          distanceFromPrevious: 0,
+          velocityPxPerMs: 0
+        };
+      }
+
+      const dx = point.x - previous.x;
+      const dy = point.y - previous.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      const deltaMs = Math.max((point.timestamp || 0) - (previous.timestamp || 0), 0);
+
+      return {
+        ...point,
+        deltaMs: Number(deltaMs.toFixed(3)),
+        distanceFromPrevious: Number(distance.toFixed(3)),
+        velocityPxPerMs: deltaMs > 0 ? Number((distance / deltaMs).toFixed(6)) : 0
+      };
+    });
   }
 
   async function signPdf() {
@@ -277,35 +310,85 @@ export default function App() {
     page.drawText(`Datum: ${date}`, { x: x + 8, y: y + boxHeight - 62, size: 8, font });
 
     const originalHash = await sha256Hex(pdfBytes.slice(0));
+    const signatureImageHash = await sha256Hex(
+      new TextEncoder().encode(signatureImageData)
+    );
+
+    const enrichedPoints = enrichPoints(points);
 
     const evidence = {
       schema: "document-centered-signature-evidence-v1",
       createdAt: new Date().toISOString(),
-      signer: { name, place, purpose, date },
+      signer: {
+        name,
+        place,
+        purpose,
+        declaredDate: date
+      },
       document: {
         originalFileName: pdfFile?.name || null,
         originalSha256: originalHash,
         signedPage: pageNumber
+      },
+      visibleSignature: {
+        imageSha256: signatureImageHash,
+        imageFormat: "image/png",
+        canvasWidth: signCanvasRef.current.width,
+        canvasHeight: signCanvasRef.current.height
       },
       signaturePlacement: {
         page: pageNumber,
         x,
         y,
         width,
-        height: boxHeight
+        height: boxHeight,
+        previewCanvasWidth: previewCanvas.width,
+        previewCanvasHeight: previewCanvas.height,
+        scaleX,
+        scaleY
       },
-      biometricData: {
-        pointCount: points.length,
-        points
+      biometricSignatureData: {
+        warning:
+          "Pressure/pointer data depends on device and browser support and is not guaranteed.",
+        pointCount: enrichedPoints.length,
+        points: enrichedPoints
       },
+      auditTrail: [
+        {
+          event: "pdf_loaded",
+          time: new Date().toISOString(),
+          fileName: pdfFile?.name || null
+        },
+        {
+          event: "signature_drawn",
+          time: new Date().toISOString(),
+          pointCount: enrichedPoints.length
+        },
+        {
+          event: "metadata_confirmed",
+          time: new Date().toISOString(),
+          name,
+          place,
+          purpose,
+          date
+        },
+        {
+          event: "pdf_visibly_signed",
+          time: new Date().toISOString()
+        }
+      ],
       runtime: {
         userAgent: navigator.userAgent,
         language: navigator.language,
         platform: navigator.platform,
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight
+        }
       },
       note:
-        "Diese Daten dienen der späteren Beweisführung. Druckwerte hängen vom Gerät ab."
+        "Diese eingebetteten Daten dienen der späteren Beweisführung. Das PDF enthält in dieser Version eine sichtbare Signatur und Evidenzdaten, aber noch keine PAdES/PKCS#7-Signatur."
     };
 
     const evidenceBytes = new TextEncoder().encode(JSON.stringify(evidence, null, 2));
@@ -319,7 +402,24 @@ export default function App() {
 
     const signed = await pdfDoc.save();
 
-    const blob = new Blob([signed], { type: "application/pdf" });
+    const signedHash = await sha256Hex(signed);
+
+    const finalPdfDoc = await PDFDocument.load(signed);
+    finalPdfDoc.setTitle(pdfFile?.name || "Signiertes PDF");
+    finalPdfDoc.setSubject("Dokumentenzentrierte sichtbare Signatur mit Evidenzdaten");
+    finalPdfDoc.setProducer("PDF Signature App");
+    finalPdfDoc.setCreator("PDF Signature App");
+    finalPdfDoc.setKeywords([
+      "signed",
+      "signature-evidence",
+      `original-sha256:${originalHash}`,
+      `signed-sha256:${signedHash}`
+    ]);
+    finalPdfDoc.setModificationDate(new Date());
+
+    const finalBytes = await finalPdfDoc.save();
+
+    const blob = new Blob([finalBytes], { type: "application/pdf" });
     const url = URL.createObjectURL(blob);
 
     setSignedUrl(url);
